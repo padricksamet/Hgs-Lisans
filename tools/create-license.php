@@ -1,0 +1,2 @@
+<?php
+if($argc<2){fwrite(STDERR,"Kullanım: php create-license.php domain [plan] [YYYY-MM-DD]\n");exit(1);}$domain=strtolower($argv[1]);$plan=$argv[2]??'standard';$expires=$argv[3]??null;$alphabet='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';$parts=[];for($p=0;$p<4;$p++){$part='';for($i=0;$i<4;$i++)$part.=$alphabet[random_int(0,strlen($alphabet)-1)];$parts[]=$part;}$key='GB-'.implode('-',$parts);echo "Lisans: $key\nSHA256: ".hash('sha256',$key)."\nDomain: $domain\nPlan: $plan\nExpires: ".($expires??'Süresiz')."\n";

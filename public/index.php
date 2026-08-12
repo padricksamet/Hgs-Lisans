@@ -1,0 +1,16 @@
+<?php
+declare(strict_types=1);
+header('Content-Type: application/json; charset=utf-8');header('Cache-Control: no-store');header('X-Content-Type-Options: nosniff');
+if(($_SERVER['REQUEST_METHOD']??'GET')!=='POST'||parse_url((string)($_SERVER['REQUEST_URI']??'/'),PHP_URL_PATH)!=='/v1/verify'){http_response_code(404);echo json_encode(['error'=>'not_found']);exit;}
+try{
+ $input=json_decode((string)file_get_contents('php://input'),true,16,JSON_THROW_ON_ERROR);$key=strtoupper(trim((string)($input['license_key']??'')));$domain=strtolower(trim((string)($input['domain']??'')));$installation=(string)($input['installation_id']??'');
+ if(!preg_match('/^[A-Z0-9-]{20,80}$/',$key)||!preg_match('/^(localhost|[a-z0-9.-]+)$/',$domain)||strlen($installation)!==64)throw new InvalidArgumentException('invalid_request');
+ $databaseUrl=(string)getenv('DATABASE_URL');$parts=parse_url($databaseUrl);if(!is_array($parts))throw new RuntimeException('database_missing');
+ $pdo=new PDO('pgsql:host='.$parts['host'].';port='.($parts['port']??5432).';dbname='.ltrim($parts['path'],'/'),urldecode((string)($parts['user']??'')),urldecode((string)($parts['pass']??'')),[PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION,PDO::ATTR_DEFAULT_FETCH_MODE=>PDO::FETCH_ASSOC]);
+ $q=$pdo->prepare('SELECT license_key_hash,status,plan,domain,expires_at,max_activations FROM licenses WHERE license_key_hash=? LIMIT 1');$q->execute([hash('sha256',$key)]);$row=$q->fetch();$valid=$row&&$row['status']==='active'&&($row['expires_at']===null||strtotime((string)$row['expires_at'])>time())&&($row['domain']===null||hash_equals(strtolower((string)$row['domain']),$domain));
+ if($valid&&$row['domain']===null){$u=$pdo->prepare('UPDATE licenses SET domain=?,updated_at=NOW() WHERE license_key_hash=? AND domain IS NULL');$u->execute([$domain,hash('sha256',$key)]);$row['domain']=$domain;}
+ if($valid){$a=$pdo->prepare('INSERT INTO activations(license_key_hash,domain,installation_id,last_seen_at,created_at) VALUES(?,?,?,NOW(),NOW()) ON CONFLICT(license_key_hash,installation_id) DO UPDATE SET domain=EXCLUDED.domain,last_seen_at=NOW()');$a->execute([hash('sha256',$key),$domain,$installation]);$count=$pdo->prepare('SELECT COUNT(*) FROM activations WHERE license_key_hash=?');$count->execute([hash('sha256',$key)]);if((int)$count->fetchColumn()>(int)$row['max_activations'])$valid=false;}
+ $payload=json_encode(['valid'=>(bool)$valid,'domain'=>$domain,'plan'=>$valid?(string)$row['plan']:'','expires_at'=>$valid&&$row['expires_at']?(string)$row['expires_at']:'','issued_at'=>time(),'message'=>$valid?'Lisans aktif.':'Lisans geçersiz, süresi dolmuş veya alan adı eşleşmiyor.'],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR);
+ $private=(string)getenv('LICENSE_PRIVATE_KEY');$private=str_starts_with($private,'base64:')?substr($private,7):$private;$secret=base64_decode($private,true);if(!is_string($secret)||strlen($secret)!==SODIUM_CRYPTO_SIGN_SECRETKEYBYTES)throw new RuntimeException('signing_key_invalid');
+ echo json_encode(['payload'=>$payload,'signature'=>base64_encode(sodium_crypto_sign_detached($payload,$secret))],JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR);
+}catch(InvalidArgumentException){http_response_code(422);echo json_encode(['error'=>'invalid_request']);}catch(Throwable $e){error_log($e);http_response_code(503);echo json_encode(['error'=>'service_unavailable']);}
